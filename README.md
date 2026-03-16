@@ -1,13 +1,5 @@
 # Portable Inspection Edge Node
 
-## Sumário
-- Objetivo
-- Requisitos
-- Como compilar e executar (SimulateSystem)
-- Estrutura do repositório
-- Evidências
-- Contato
-
 ## Como compilar e executar (Linux)
 Pré-requisitos:
 - g++ com suporte a C++17
