@@ -13,7 +13,9 @@ struct Pose {
 struct CapturedImage {
     std::string id;
     Pose pose;
-    ImageFrame frame;
+    ImageFrame frame;                // pixels crus (processamento local)
+    std::vector<uint8_t> encoded;    // bytes JPEG/PNG/WebP, usados pelo classificador remoto
+    std::string mime = "image/jpeg";
 };
 
 struct Detection {
@@ -21,12 +23,18 @@ struct Detection {
     float confidence;  // 0..1, estimada pelo classificador
 };
 
+// Resultado de classificar UMA imagem. Falha nunca pode ser confundida com "nada encontrado".
+struct Classification {
+    bool ok = true;
+    std::string error;
+    std::vector<Detection> detections;
+};
+
 // Fronteira com o modelo de visão (LLM leve). Implementações: mock, HTTP, local...
 class IVisionClassifier {
 public:
     virtual ~IVisionClassifier() = default;
-    virtual std::vector<Detection> classify(const CapturedImage& img,
-                                            const PatternCatalog& catalog) = 0;
+    virtual Classification classify(const CapturedImage& img, const PatternCatalog& catalog) = 0;
 };
 
 // Fronteira com o envio web para a máquina do usuário.
@@ -45,6 +53,7 @@ struct Flag {
 struct SurveyReport {
     std::string survey_id;
     int images_total = 0;
+    std::vector<std::string> failed_image_ids;  // classificação falhou: imagem NÃO foi avaliada
     std::vector<Flag> flags;
     std::vector<CapturedImage> flagged_images;  // somente as imagens sinalizadas
 };
