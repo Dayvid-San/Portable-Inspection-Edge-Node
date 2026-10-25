@@ -8,9 +8,11 @@ class ScriptedClassifier : public IVisionClassifier {
 
 public:
     void set(const std::string& imageId, std::vector<Detection> d) { script[imageId] = std::move(d); }
-    std::vector<Detection> classify(const CapturedImage& img, const PatternCatalog&) override {
+    Classification classify(const CapturedImage& img, const PatternCatalog&) override {
+        Classification c;
         auto it = script.find(img.id);
-        return it == script.end() ? std::vector<Detection>{} : it->second;
+        if (it != script.end()) c.detections = it->second;
+        return c;
     }
 };
 

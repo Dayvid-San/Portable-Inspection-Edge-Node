@@ -22,7 +22,12 @@ SurveyReport SurveyPipeline::run(const std::string& surveyId,
 
     for (const auto& img : images) {
         bool flagged = false;
-        for (const auto& d : classifier.classify(img, catalog)) {
+        Classification c = classifier.classify(img, catalog);
+        if (!c.ok) {
+            rep.failed_image_ids.push_back(img.id);
+            continue;
+        }
+        for (const auto& d : c.detections) {
             if (d.confidence < threshold) continue;
             flagged = true;
             auto it = std::find_if(rep.flags.begin(), rep.flags.end(),
@@ -44,7 +49,11 @@ std::string SurveyPipeline::toJson(const SurveyReport& r) {
     o << std::fixed << std::setprecision(2);
     o << "{\n  \"survey_id\": \"" << esc(r.survey_id) << "\",\n"
       << "  \"images_total\": " << r.images_total << ",\n"
-      << "  \"images_flagged\": " << r.flagged_images.size() << ",\n  \"flags\": [";
+      << "  \"images_flagged\": " << r.flagged_images.size() << ",\n"
+      << "  \"images_failed\": [";
+    for (size_t i = 0; i < r.failed_image_ids.size(); i++)
+        o << (i ? ", " : "") << "\"" << esc(r.failed_image_ids[i]) << "\"";
+    o << "],\n  \"flags\": [";
     for (size_t i = 0; i < r.flags.size(); i++) {
         const auto& f = r.flags[i];
         o << (i ? "," : "") << "\n    {\"pattern\": \"" << esc(f.pattern_id)

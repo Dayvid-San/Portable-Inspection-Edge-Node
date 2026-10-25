@@ -26,6 +26,7 @@ add_executable(RunTests
     src/Core/EdgeProcessor.cpp
     tests/survey_test.cpp
     src/Survey/Survey.cpp
+    src/Survey/ClaudeClassifier.cpp
 )
 target_link_libraries(RunTests GTest::gtest_main)
 include(GoogleTest)
@@ -39,4 +40,5 @@ add_executable(SimulateSystem
 add_executable(SurveySimulation
     src/survey_simulation.cpp
     src/Survey/Survey.cpp
+    src/Survey/ClaudeClassifier.cpp
 )
