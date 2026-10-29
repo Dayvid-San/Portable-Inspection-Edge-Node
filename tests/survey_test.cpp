@@ -151,3 +151,63 @@ TEST(Survey, ReportsFailedImagesInsteadOfDroppingThem) {
     EXPECT_EQ(rep.failed_image_ids, std::vector<std::string>{"i1"});
     EXPECT_NE(SurveyPipeline::toJson(rep).find("\"images_failed\": [\"i1\"]"), std::string::npos);
 }
+
+// ---- Metricas e linha de base ----
+#include "../src/Survey/EdgeClassifier.h"
+#include "../src/Survey/Metrics.h"
+
+TEST(Metrics, ConfusionPrecisionRecallF1) {
+    std::vector<Sample> s = {{0.9, true}, {0.8, true}, {0.7, false}, {0.2, true}, {0.1, false}};
+    Confusion c = metrics::confusionAt(s, 0.5);
+    EXPECT_EQ(c.tp, 2); EXPECT_EQ(c.fp, 1); EXPECT_EQ(c.fn, 1); EXPECT_EQ(c.tn, 1);
+    EXPECT_NEAR(c.precision(), 2.0 / 3, 1e-9);
+    EXPECT_NEAR(c.recall(), 2.0 / 3, 1e-9);
+    EXPECT_NEAR(c.f1(), 2.0 / 3, 1e-9);
+}
+
+TEST(Metrics, AucPerfectRandomAndTies) {
+    EXPECT_DOUBLE_EQ(metrics::auc({{0.9, true}, {0.1, false}}), 1.0);
+    EXPECT_DOUBLE_EQ(metrics::auc({{0.1, true}, {0.9, false}}), 0.0);
+    EXPECT_DOUBLE_EQ(metrics::auc({{0.5, true}, {0.5, false}}), 0.5);
+    EXPECT_DOUBLE_EQ(metrics::auc({{0.9, true}}), 0.0);  // sem negativos: indefinido -> 0
+}
+
+TEST(Metrics, BestF1ThresholdSeparatesClasses) {
+    std::vector<Sample> s = {{0.9, true}, {0.8, true}, {0.3, false}, {0.2, false}};
+    double t = metrics::bestF1Threshold(s);
+    EXPECT_GT(t, 0.3);
+    EXPECT_LE(t, 0.8);
+}
+
+namespace {
+CapturedImage grayImg(int w, int h, uint8_t v, bool vline) {
+    CapturedImage c;
+    c.frame.width = w; c.frame.height = h; c.frame.valid = true;
+    c.frame.data.assign((size_t)w * h, v);
+    if (vline) for (int y = 0; y < h; y++) c.frame.data[(size_t)y * w + w / 2] = 255;
+    return c;
+}
+}  // namespace
+
+TEST(EdgeBaseline, LineScoresAboveFlatSurface) {
+    EdgeClassifier cls;
+    auto cat = PatternCatalog::parse("p|P|d\n");
+    auto flat = cls.classify(grayImg(64, 64, 100, false), cat);
+    auto line = cls.classify(grayImg(64, 64, 0, true), cat);
+    ASSERT_TRUE(flat.ok && line.ok);
+    EXPECT_GT(line.detections[0].confidence, flat.detections[0].confidence);
+    EXPECT_FALSE(cls.classify(CapturedImage{}, cat).ok);  // sem pixels: falha, nao "nada"
+}
+
+// Regressao: getPixel limitava y pela LARGURA; em imagem retrato (h > w) as linhas abaixo de y=w
+// eram lidas como a linha w-1 e o gradiente vertical sumia. Imagens transpostas devem dar a mesma densidade.
+TEST(EdgeBaseline, PortraitAndLandscapeGiveSameDensityForTransposedImage) {
+    EdgeProcessor p;
+    CapturedImage portrait = grayImg(40, 120, 0, false);
+    CapturedImage landscape = grayImg(120, 40, 0, false);
+    for (int y = 80; y < 84; y++) for (int x = 0; x < 40; x++) portrait.frame.data[(size_t)y * 40 + x] = 255;   // faixa horizontal em y=80 (> largura)
+    for (int x = 80; x < 84; x++) for (int y = 0; y < 40; y++) landscape.frame.data[(size_t)y * 120 + x] = 255;  // faixa vertical em x=80
+    float dp = p.analyze(portrait.frame).edge_density, dl = p.analyze(landscape.frame).edge_density;
+    EXPECT_GT(dp, 0.0f);
+    EXPECT_NEAR(dp, dl, 0.005);
+}

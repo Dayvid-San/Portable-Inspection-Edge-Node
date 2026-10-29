@@ -4,11 +4,11 @@
 #include <algorithm>
 #include <iostream>
 
-inline uint8_t getPixel(const std::vector<uint8_t>& data, int w, int x, int y) {
+inline uint8_t getPixel(const std::vector<uint8_t>& data, int w, int h, int x, int y) {
     if (x < 0) x = 0;
     if (x >= w) x = w - 1;
     if (y < 0) y = 0;
-    if (y >= w) y = w - 1;
+    if (y >= h) y = h - 1;
     return data[y * w + x];
 }
 
@@ -22,15 +22,15 @@ AnalysisResult EdgeProcessor::analyze(const ImageFrame& frame) {
     for (int y = 1; y < h - 1; y++) {
         for (int x = 1; x < w - 1; x++) {
             int sum = 0;
-            sum += getPixel(grayImage, w, x-1, y-1) * 1;
-            sum += getPixel(grayImage, w, x  , y-1) * 2;
-            sum += getPixel(grayImage, w, x+1, y-1) * 1;
-            sum += getPixel(grayImage, w, x-1, y  ) * 2;
-            sum += getPixel(grayImage, w, x  , y  ) * 4;
-            sum += getPixel(grayImage, w, x+1, y  ) * 2;
-            sum += getPixel(grayImage, w, x-1, y+1) * 1;
-            sum += getPixel(grayImage, w, x  , y+1) * 2;
-            sum += getPixel(grayImage, w, x+1, y+1) * 1;
+            sum += getPixel(grayImage, w, h, x-1, y-1) * 1;
+            sum += getPixel(grayImage, w, h, x  , y-1) * 2;
+            sum += getPixel(grayImage, w, h, x+1, y-1) * 1;
+            sum += getPixel(grayImage, w, h, x-1, y  ) * 2;
+            sum += getPixel(grayImage, w, h, x  , y  ) * 4;
+            sum += getPixel(grayImage, w, h, x+1, y  ) * 2;
+            sum += getPixel(grayImage, w, h, x-1, y+1) * 1;
+            sum += getPixel(grayImage, w, h, x  , y+1) * 2;
+            sum += getPixel(grayImage, w, h, x+1, y+1) * 1;
             blurredImage[y * w + x] = sum / 16;
         }
     }
@@ -48,12 +48,12 @@ AnalysisResult EdgeProcessor::analyze(const ImageFrame& frame) {
                 continue;
             }
 
-            int gx = -1 * getPixel(blurredImage, w, x-1, y-1) + 1 * getPixel(blurredImage, w, x+1, y-1)
-                     -2 * getPixel(blurredImage, w, x-1, y  ) + 2 * getPixel(blurredImage, w, x+1, y  )
-                     -1 * getPixel(blurredImage, w, x-1, y+1) + 1 * getPixel(blurredImage, w, x+1, y+1);
+            int gx = -1 * getPixel(blurredImage, w, h, x-1, y-1) + 1 * getPixel(blurredImage, w, h, x+1, y-1)
+                     -2 * getPixel(blurredImage, w, h, x-1, y  ) + 2 * getPixel(blurredImage, w, h, x+1, y  )
+                     -1 * getPixel(blurredImage, w, h, x-1, y+1) + 1 * getPixel(blurredImage, w, h, x+1, y+1);
 
-            int gy = -1 * getPixel(blurredImage, w, x-1, y-1) - 2 * getPixel(blurredImage, w, x  , y-1) - 1 * getPixel(blurredImage, w, x+1, y-1)
-                     +1 * getPixel(blurredImage, w, x-1, y+1) + 2 * getPixel(blurredImage, w, x  , y+1) + 1 * getPixel(blurredImage, w, x+1, y+1);
+            int gy = -1 * getPixel(blurredImage, w, h, x-1, y-1) - 2 * getPixel(blurredImage, w, h, x  , y-1) - 1 * getPixel(blurredImage, w, h, x+1, y-1)
+                     +1 * getPixel(blurredImage, w, h, x-1, y+1) + 2 * getPixel(blurredImage, w, h, x  , y+1) + 1 * getPixel(blurredImage, w, h, x+1, y+1);
 
             int magnitude = std::sqrt(gx*gx + gy*gy);
             

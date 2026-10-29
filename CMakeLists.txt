@@ -42,3 +42,10 @@ add_executable(SurveySimulation
     src/Survey/Survey.cpp
     src/Survey/ClaudeClassifier.cpp
 )
+
+add_executable(EvalClassifier
+    src/eval_classifier.cpp
+    src/Survey/Survey.cpp
+    src/Survey/ClaudeClassifier.cpp
+    src/Core/EdgeProcessor.cpp
+)
