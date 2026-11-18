@@ -1,6 +1,8 @@
 // Avalia um classificador num conjunto rotulado:  <dataset>/positive/*  e  <dataset>/negative/*
 //
-//   ./EvalClassifier <dataset> [--classifier edge|claude] [--pattern id] [--max-side N]
+//   ./EvalClassifier <dataset> [--classifier edge|claude] [--pattern id] [--max-side N] [--threshold T]
+//
+// --threshold T mostra tambem a linha para um limiar fixo (ex.: escolhido num conjunto de validacao).
 //
 // "claude" usa ANTHROPIC_API_KEY (e CLASSIFIER_MODEL / CLASSIFIER_FALLBACK, como a simulação).
 // Falhas de classificação são contadas à parte e ficam FORA das métricas.
@@ -78,17 +80,19 @@ bool load(const fs::path& p, int maxSide, CapturedImage& img) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "uso: " << argv[0] << " <dataset> [--classifier edge|claude] [--pattern id] [--max-side N]\n";
+        std::cerr << "uso: " << argv[0] << " <dataset> [--classifier edge|claude] [--pattern id] [--max-side N] [--threshold T]\n";
         return 2;
     }
     fs::path root = argv[1];
     std::string which = "edge", patternId = "target";
     int maxSide = 0;
+    double fixedThreshold = -1;
     for (int i = 2; i + 1 < argc; i += 2) {
         std::string a = argv[i];
         if (a == "--classifier") which = argv[i + 1];
         else if (a == "--pattern") patternId = argv[i + 1];
         else if (a == "--max-side") maxSide = std::atoi(argv[i + 1]);
+        else if (a == "--threshold") fixedThreshold = std::atof(argv[i + 1]);
         else { std::cerr << "opcao desconhecida: " << a << "\n"; return 2; }
     }
 
@@ -149,5 +153,6 @@ int main(int argc, char** argv) {
     row("0.50 (padrao do LLM)", 0.5);
     double best = metrics::bestF1Threshold(samples);
     row("melhor F1 = " + std::to_string(best).substr(0, 5), best);
+    if (fixedThreshold >= 0) row("fixo = " + std::to_string(fixedThreshold).substr(0, 5), fixedThreshold);
     return 0;
 }
