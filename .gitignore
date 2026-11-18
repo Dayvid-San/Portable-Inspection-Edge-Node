@@ -47,3 +47,6 @@ sdkconfig.old
 output_*.jpg
 output_*.png
 *.json_backup
+# === Execução local da PoC ===
+received/
+uplink_queue/

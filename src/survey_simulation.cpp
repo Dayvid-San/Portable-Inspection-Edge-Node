@@ -7,6 +7,9 @@
 #include "Mocks/ScriptedClassifier.h"
 #include "Survey/ClaudeClassifier.h"
 #include "Survey/CurlTransport.h"
+#include "Survey/BudgetedClassifier.h"
+#include "Survey/HttpUplink.h"
+#include "Survey/ReportQueue.h"
 #include "Survey/Survey.h"
 
 int main() {
@@ -30,6 +33,9 @@ int main() {
         img.id = "img_" + std::to_string(i + 1);
         img.pose.yaw_deg = yaws[i];
         img.pose.pitch_deg = -30;
+        img.pose.has_position = true;  // demo: as 2 primeiras na mesma area; as demais, ~120 m adiante
+        img.pose.lat = -8.0476 + (i < 2 ? 0.0 : 0.0011 * i);
+        img.pose.lon = -34.8770;
         img.frame = camera.capture();
         img.encoded = jpeg;  // no hardware real, o JPEG sai direto da câmera
         images.push_back(img);
@@ -52,11 +58,28 @@ int main() {
     IVisionClassifier& classifier = key ? static_cast<IVisionClassifier&>(claude) : scripted;
     std::cout << "[CLASSIFICADOR] " << (key ? "Claude (" + cfg.model + ")" : std::string("roteirizado (sem ANTHROPIC_API_KEY)")) << "\n";
 
-    SurveyPipeline pipeline(classifier, catalog, 0.5f);
+    // Teto de gasto: no maximo 200 chamadas por levantamento e para apos 3 falhas seguidas.
+    BudgetedClassifier budgeted(classifier, 200, 3);
+    SurveyPipeline pipeline(budgeted, catalog, 0.5f);
     SurveyReport report = pipeline.run("survey-demo", images);
 
-    MemoryUplink uplink;
-    uplink.send(SurveyPipeline::toJson(report));
-    std::cout << uplink.sent.back() << "\n";
+    // Com UPLINK_URL + UPLINK_TOKEN envia para a maquina do usuario; relatorios que nao saem ficam
+    // numa fila em disco (UPLINK_QUEUE_DIR, padrao ./uplink_queue) e sao reenviados no proximo levantamento.
+    const char* upUrl = std::getenv("UPLINK_URL");
+    const char* upTok = std::getenv("UPLINK_TOKEN");
+    std::string json = SurveyPipeline::toJson(report, upUrl != nullptr);
+    if (upUrl && upTok) {
+        const char* qd = std::getenv("UPLINK_QUEUE_DIR");
+        ReportQueue queue(qd ? qd : "uplink_queue");
+        HttpUplink http(transport, upUrl, upTok);
+        ResilientUplink uplink(http, queue);
+        bool delivered = uplink.send(json);
+        std::cout << "[UPLINK] " << (delivered ? "entregue" : uplink.queued_ok() ? "GUARDADO na fila" : "FALHOU e nao foi guardado")
+                  << " -> " << upUrl << " (pendentes: " << uplink.pending() << ")\n";
+    } else {
+        MemoryUplink uplink;
+        uplink.send(json);
+    }
+    std::cout << SurveyPipeline::toJson(report) << "\n";
     return 0;
 }

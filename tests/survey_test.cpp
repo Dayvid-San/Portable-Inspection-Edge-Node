@@ -41,7 +41,7 @@ TEST(Survey, GroupsSamePatternAcrossImages) {
 TEST(Survey, JsonContainsFlagsAndEscapes) {
     SurveyReport r;
     r.survey_id = "a\"b";
-    r.flags.push_back({"x", {"i1"}, 0.9f});
+    r.flags.push_back({"x", {"i1"}, 0.9f, {0.9f}});
     auto j = SurveyPipeline::toJson(r);
     EXPECT_NE(j.find("a\\\"b"), std::string::npos);
     EXPECT_NE(j.find("\"pattern\": \"x\""), std::string::npos);
@@ -210,4 +210,259 @@ TEST(EdgeBaseline, PortraitAndLandscapeGiveSameDensityForTransposedImage) {
     float dp = p.analyze(portrait.frame).edge_density, dl = p.analyze(landscape.frame).edge_density;
     EXPECT_GT(dp, 0.0f);
     EXPECT_NEAR(dp, dl, 0.005);
+}
+
+// ---- Uplink HTTP, fila offline, orçamento, zonas, catálogo JSON ----
+#include <filesystem>
+#include "../src/Survey/BudgetedClassifier.h"
+#include "../src/Survey/HttpUplink.h"
+#include "../src/Survey/ReportQueue.h"
+
+namespace {
+struct SeqTransport : IHttpTransport {
+    std::vector<int> statuses;
+    int calls = 0;
+    std::vector<std::string> lastHeaders;
+    HttpResponse post(const std::string&, const std::vector<std::string>& h, const std::string&) override {
+        lastHeaders = h;
+        HttpResponse r;
+        r.status = statuses[std::min<size_t>(calls++, statuses.size() - 1)];
+        return r;
+    }
+};
+
+// Uplink controlável: online/offline e registro do que chegou, em ordem.
+struct FakeUplink : IUplink {
+    bool online = true;
+    bool permanent = false;  // quando offline, a falha e definitiva?
+    std::vector<std::string> got;
+    bool lastFailureWasPermanent() const override { return permanent; }
+    bool send(const std::string& j) override {
+        if (!online) return false;
+        got.push_back(j);
+        return true;
+    }
+};
+
+struct TmpDir {
+    std::filesystem::path p;
+    TmpDir() {
+        p = std::filesystem::temp_directory_path() / ("edge_test_" + std::to_string(::getpid()) + "_" + std::to_string(counter++));
+        std::filesystem::remove_all(p);
+    }
+    ~TmpDir() { std::error_code ec; std::filesystem::remove_all(p, ec); }
+    static inline int counter = 0;
+};
+}  // namespace
+
+TEST(HttpUplink, RetriesTransientFailuresWithBackoff) {
+    SeqTransport t; t.statuses = {0, 503, 201};
+    HttpUplink up(t, "http://x/api", "tok");
+    std::vector<int> sleeps;
+    up.sleepMs = [&](int ms) { sleeps.push_back(ms); };
+    EXPECT_TRUE(up.send("{}"));
+    EXPECT_EQ(t.calls, 3);
+    EXPECT_EQ(sleeps, (std::vector<int>{1000, 2000}));
+    EXPECT_NE(std::find(t.lastHeaders.begin(), t.lastHeaders.end(), "authorization: Bearer tok"), t.lastHeaders.end());
+}
+
+TEST(HttpUplink, DoesNotRetryClientErrorsAndGivesUp) {
+    SeqTransport a; a.statuses = {401};
+    HttpUplink ua(a, "u", "t"); ua.sleepMs = [](int) {};
+    EXPECT_FALSE(ua.send("{}"));
+    EXPECT_EQ(a.calls, 1);
+
+    SeqTransport b; b.statuses = {500};
+    HttpUplink ub(b, "u", "t"); ub.sleepMs = [](int) {};
+    EXPECT_FALSE(ub.send("{}"));
+    EXPECT_EQ(b.calls, ub.maxAttempts);
+
+    SeqTransport e; e.statuses = {400};
+    HttpUplink ue(e, "u", "t"); ue.sleepMs = [](int) {};
+    EXPECT_FALSE(ue.send("{}"));
+    EXPECT_TRUE(ue.lastFailureWasPermanent());   // conteudo recusado: nao adianta repetir
+    SeqTransport f; f.statuses = {401};
+    HttpUplink uf(f, "u", "t"); uf.sleepMs = [](int) {};
+    EXPECT_FALSE(uf.send("{}"));
+    EXPECT_FALSE(uf.lastFailureWasPermanent());  // credencial: um humano corrige, entao fica na fila
+    SeqTransport g; g.statuses = {408, 200};
+    HttpUplink ug(g, "u", "t"); ug.sleepMs = [](int) {};
+    EXPECT_TRUE(ug.send("{}"));
+
+    SeqTransport c; c.statuses = {429, 200};
+    HttpUplink uc(c, "u", "t"); uc.sleepMs = [](int) {};
+    EXPECT_TRUE(uc.send("{}"));  // 429 e transitório
+}
+
+TEST(Survey, JsonAttachesOnlyFlaggedImagesWhenAsked) {
+    SurveyReport r;
+    r.survey_id = "s";
+    CapturedImage c; c.id = "i1"; c.encoded = {'M', 'a', 'n'}; c.pose.yaw_deg = 90;
+    r.flagged_images.push_back(c);
+    EXPECT_EQ(SurveyPipeline::toJson(r).find("data_base64"), std::string::npos);
+    auto v = minijson::parse(SurveyPipeline::toJson(r, true));  // continua JSON válido
+    EXPECT_EQ(v.get("images")->a[0].get("data_base64")->s, "TWFu");
+    EXPECT_EQ(v.get("images")->a[0].get("pose")->get("yaw_deg")->n, 90);
+}
+
+TEST(Survey, JsonEscapesControlCharactersInIds) {
+    SurveyReport r;
+    r.survey_id = "a\nb\"c";
+    auto v = minijson::parse(SurveyPipeline::toJson(r));
+    EXPECT_EQ(v.get("survey_id")->s, "a\nb\"c");
+}
+
+TEST(ReportQueue, KeepsOrderSurvivesRestartAndStopsAtFirstFailure) {
+    TmpDir d;
+    FakeUplink up;
+    {
+        ReportQueue q(d.p);
+        EXPECT_TRUE(q.enqueue("r1")); EXPECT_TRUE(q.enqueue("r2")); EXPECT_TRUE(q.enqueue("r3"));
+    }
+    ReportQueue q(d.p);  // "reinício": relê do disco
+    ASSERT_EQ(q.size(), 3u);
+    up.online = false;
+    EXPECT_EQ(q.flush(up), 0u);
+    EXPECT_EQ(q.size(), 3u);  // nada perdido
+    up.online = true;
+    EXPECT_EQ(q.flush(up), 3u);
+    EXPECT_EQ(up.got, (std::vector<std::string>{"r1", "r2", "r3"}));
+    EXPECT_EQ(q.size(), 0u);
+    EXPECT_TRUE(q.enqueue("r4"));  // numeração continua sem colidir
+    EXPECT_EQ(q.size(), 1u);
+}
+
+TEST(ReportQueue, RefusesInsteadOfDroppingWhenFullAndCleansPartialWrites) {
+    TmpDir d;
+    ReportQueue q(d.p, 10);
+    EXPECT_TRUE(q.enqueue("123456"));
+    EXPECT_FALSE(q.enqueue("123456"));  // estouraria 10 bytes: recusa, não descarta o antigo
+    EXPECT_EQ(q.size(), 1u);
+    { std::ofstream(d.p / "000000000099.tmp") << "meio-escrito"; }
+    ReportQueue again(d.p, 10);
+    EXPECT_FALSE(std::filesystem::exists(d.p / "000000000099.tmp"));
+}
+
+TEST(ResilientUplink, QueuesWhenOfflineAndDeliversInOrderWhenBack) {
+    TmpDir d;
+    ReportQueue q(d.p);
+    FakeUplink net;
+    ResilientUplink up(net, q);
+    net.online = false;
+    EXPECT_FALSE(up.send("a")); EXPECT_TRUE(up.queued_ok());
+    EXPECT_FALSE(up.send("b")); EXPECT_TRUE(up.queued_ok());
+    EXPECT_EQ(up.pending(), 2u);
+    net.online = true;
+    EXPECT_TRUE(up.send("c"));  // esvazia a fila antes do novo
+    EXPECT_EQ(net.got, (std::vector<std::string>{"a", "b", "c"}));
+    EXPECT_EQ(up.pending(), 0u);
+}
+
+TEST(ResilientUplink, NewReportGoesBehindAStuckQueue) {
+    TmpDir d;
+    ReportQueue q(d.p);
+    q.enqueue("old");
+    FakeUplink net;
+    net.online = false;
+    ResilientUplink up(net, q);
+    EXPECT_FALSE(up.send("new"));
+    EXPECT_EQ(up.pending(), 2u);  // "new" não passa na frente de "old"
+    net.online = true;
+    EXPECT_TRUE(up.send("newer"));
+    EXPECT_EQ(net.got, (std::vector<std::string>{"old", "new", "newer"}));
+}
+
+TEST(ResilientUplink, PermanentRejectionGoesToRejectedAndDoesNotBlockQueue) {
+    TmpDir d;
+    ReportQueue q(d.p);
+    FakeUplink net;
+    ResilientUplink up(net, q);
+    net.online = false; net.permanent = true;
+    EXPECT_FALSE(up.send("ruim"));
+    EXPECT_FALSE(up.queued_ok());
+    EXPECT_EQ(up.pending(), 0u);   // nao fica na fila
+    EXPECT_EQ(q.rejected(), 1u);   // mas tambem nao se perde
+    net.online = true; net.permanent = false;
+    EXPECT_TRUE(up.send("bom"));   // a fila nao ficou travada
+    EXPECT_EQ(net.got, std::vector<std::string>{"bom"});
+}
+
+TEST(ReportQueue, FlushMovesPermanentlyRejectedItemAndContinues) {
+    TmpDir d;
+    ReportQueue q(d.p);
+    q.enqueue("A"); q.enqueue("B");
+    struct Picky : IUplink {
+        std::vector<std::string> got; bool perm = false;
+        bool lastFailureWasPermanent() const override { return perm; }
+        bool send(const std::string& j) override { perm = (j == "A"); if (perm) return false; got.push_back(j); return true; }
+    } net;
+    EXPECT_EQ(q.flush(net), 1u);   // A recusado, B entregue
+    EXPECT_EQ(net.got, std::vector<std::string>{"B"});
+    EXPECT_EQ(q.size(), 0u);
+    EXPECT_EQ(q.rejected(), 1u);
+}
+
+TEST(ResilientUplink, CredentialErrorStaysQueuedForLater) {
+    TmpDir d;
+    ReportQueue q(d.p);
+    FakeUplink net;
+    ResilientUplink up(net, q);
+    net.online = false; net.permanent = false;  // ex.: 401
+    EXPECT_FALSE(up.send("r"));
+    EXPECT_TRUE(up.queued_ok());
+    EXPECT_EQ(q.rejected(), 0u);
+}
+
+TEST(BudgetedClassifier, StopsAtCallLimitAndAfterFailureStreak) {
+    ScriptedClassifier ok;
+    BudgetedClassifier a(ok, 2, 3);
+    auto cat = PatternCatalog::parse("x|X|d\n");
+    EXPECT_TRUE(a.classify(jpegImg("1"), cat).ok);
+    EXPECT_TRUE(a.classify(jpegImg("2"), cat).ok);
+    auto over = a.classify(jpegImg("3"), cat);
+    EXPECT_FALSE(over.ok);
+    EXPECT_EQ(a.callsMade(), 2);
+
+    FakeTransport t; t.reply.status = 500;
+    ClaudeVisionClassifier bad(t, ClaudeConfig{});
+    BudgetedClassifier b(bad, 100, 3);
+    for (int i = 0; i < 3; i++) EXPECT_FALSE(b.classify(jpegImg("x"), cat).ok);
+    int before = b.callsMade();
+    EXPECT_FALSE(b.classify(jpegImg("x"), cat).ok);
+    EXPECT_EQ(b.callsMade(), before);  // parou de chamar a API
+}
+
+TEST(Zones, GroupsNearbyImagesPerPatternAndIgnoresUnlocated) {
+    auto cat = PatternCatalog::parse("x|X|d\ny|Y|d\n");
+    ScriptedClassifier cls;
+    cls.set("a", {{"x", 0.9f}}); cls.set("b", {{"x", 0.6f}}); cls.set("c", {{"x", 0.7f}});
+    cls.set("d", {{"x", 0.8f}}); cls.set("e", {{"y", 0.8f}});
+    auto at = [](const std::string& id, double lat, double lon, bool has = true) {
+        CapturedImage c; c.id = id; c.pose.has_position = has; c.pose.lat = lat; c.pose.lon = lon; return c;
+    };
+    // a,b a ~11 m; c a ~1,1 km; d sem posição; e: outro padrão no mesmo lugar de a
+    std::vector<CapturedImage> imgs = {at("a", -8.0, -34.0), at("b", -8.0001, -34.0), at("c", -8.01, -34.0),
+                                       at("d", 0, 0, false), at("e", -8.0, -34.0)};
+    SurveyPipeline p(cls, cat, 0.5f);
+    auto rep = p.run("s", imgs);
+    ASSERT_EQ(rep.zones.size(), 3u);  // x: {a,b}, x: {c}, y: {e}; d (sem posição) fora
+    EXPECT_EQ(rep.zones[0].pattern_id, "x");
+    EXPECT_EQ(rep.zones[0].image_ids, (std::vector<std::string>{"a", "b"}));
+    EXPECT_FLOAT_EQ(rep.zones[0].max_confidence, 0.9f);
+    EXPECT_NEAR(rep.zones[0].lat, -8.00005, 1e-6);
+    EXPECT_EQ(rep.zones[1].image_ids, std::vector<std::string>{"c"});
+    EXPECT_EQ(rep.zones[2].pattern_id, "y");
+    p.zoneRadiusM = 0;
+    EXPECT_TRUE(p.run("s", imgs).zones.empty());
+}
+
+TEST(PatternCatalog, ParsesJsonAndAutoDetectsFormat) {
+    auto j = PatternCatalog::parse("  [{\"id\":\"a|b\",\"label\":\"A\",\"description\":\"tem | barra\"},{\"label\":\"sem id\"},{\"id\":\"c\"}]");
+    ASSERT_EQ(j.all().size(), 2u);  // entrada sem id ignorada
+    EXPECT_EQ(j.all()[0].id, "a|b");
+    EXPECT_EQ(j.all()[0].description, "tem | barra");
+    EXPECT_EQ(j.all()[1].label, "c");  // label cai para o id
+    EXPECT_EQ(PatternCatalog::parse("x|X|d\n").all().size(), 1u);  // formato antigo continua valendo
+    EXPECT_THROW(PatternCatalog::parse("[{\"id\":"), std::runtime_error);
+    EXPECT_THROW(PatternCatalog::parseJson("{\"id\":\"a\"}"), std::runtime_error);
 }

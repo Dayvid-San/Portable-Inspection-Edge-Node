@@ -9,16 +9,20 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 # 4. Incluir as pastas de cabeçalho
-include_directories(src/Core src/HAL src/Mocks src/Survey)
+include_directories(src src/Core src/HAL src/Mocks src/Survey)
 
 # --- CONFIGURAÇÃO DOS TESTES (GTest) ---
-include(FetchContent)
-FetchContent_Declare(
-  googletest
-  URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
-)
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(googletest)
+# Usa o GoogleTest do sistema (ex.: apt install libgtest-dev); so baixa se nao houver.
+find_package(GTest QUIET)
+if(NOT GTest_FOUND)
+  include(FetchContent)
+  FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+  )
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(googletest)
+endif()
 
 # Executável de Testes
 add_executable(RunTests
@@ -29,6 +33,7 @@ add_executable(RunTests
     src/Survey/ClaudeClassifier.cpp
 )
 target_link_libraries(RunTests GTest::gtest_main)
+enable_testing()
 include(GoogleTest)
 gtest_discover_tests(RunTests)
 

@@ -6,6 +6,7 @@
 
 // Posição/orientação do aparelho no momento da foto (opcional, agnóstico de veículo).
 struct Pose {
+    bool has_position = false;  // false: lat/lon nao sao validos (sem GPS)
     double lat = 0, lon = 0, alt_m = 0;
     float yaw_deg = 0, pitch_deg = 0;
 };
@@ -42,11 +43,23 @@ class IUplink {
 public:
     virtual ~IUplink() = default;
     virtual bool send(const std::string& json) = 0;
+    // true se a ULTIMA falha nao adianta repetir (ex.: o servidor recusou o conteudo). Falhas de rede,
+    // 5xx, 429 e erros de credencial (401/403, que um humano corrige) NAO sao permanentes.
+    virtual bool lastFailureWasPermanent() const { return false; }
 };
 
 struct Flag {
     std::string pattern_id;
     std::vector<std::string> image_ids;  // imagens em que o padrão foi sinalizado
+    float max_confidence = 0;
+    std::vector<float> confidences;  // paralelo a image_ids
+};
+
+// Imagens sinalizadas para o mesmo padrao e proximas entre si (mesma regiao fisica).
+struct Zone {
+    std::string pattern_id;
+    double lat = 0, lon = 0;  // centroide
+    std::vector<std::string> image_ids;
     float max_confidence = 0;
 };
 
@@ -55,6 +68,7 @@ struct SurveyReport {
     int images_total = 0;
     std::vector<std::string> failed_image_ids;  // classificação falhou: imagem NÃO foi avaliada
     std::vector<Flag> flags;
+    std::vector<Zone> zones;                    // so imagens com posicao; vazio sem GPS
     std::vector<CapturedImage> flagged_images;  // somente as imagens sinalizadas
 };
 
@@ -64,9 +78,13 @@ class SurveyPipeline {
     float threshold;
 
 public:
+    double zoneRadiusM = 25;  // imagens do mesmo padrao a ate esta distancia viram uma zona
+
     SurveyPipeline(IVisionClassifier& c, const PatternCatalog& cat, float minConfidence)
         : classifier(c), catalog(cat), threshold(minConfidence) {}
 
     SurveyReport run(const std::string& surveyId, const std::vector<CapturedImage>& images) const;
-    static std::string toJson(const SurveyReport& r);
+    // includeImages: anexa (base64) apenas as imagens sinalizadas.
+    static std::string toJson(const SurveyReport& r, bool includeImages = false);
+    static std::vector<Zone> groupZones(const SurveyReport& r, double radiusM);
 };
